@@ -39,6 +39,10 @@ create table public.notifications (id uuid primary key default gen_random_uuid()
 create table public.followups (id uuid primary key default gen_random_uuid(), patient_id uuid not null references public.patients(id), due_date date not null, reason text not null, status text not null default 'DUE');
 create table public.consents (id uuid primary key default gen_random_uuid(), patient_id uuid not null references public.patients(id), purpose text not null, granted_at timestamptz not null default now());
 create table public.audit_logs (id uuid primary key default gen_random_uuid(), user_id uuid references auth.users(id), facility_id uuid references public.facilities(id), action text not null, patient_ref text, result text not null, created_at timestamptz not null default now());
+create table public.intake_sessions (id uuid primary key default gen_random_uuid(), patient_id uuid references public.patients(id), status text not null default 'IN_PROGRESS', language text not null default 'hi-IN', created_at timestamptz not null default now(), completed_at timestamptz);
+create table public.intake_messages (id uuid primary key default gen_random_uuid(), session_id uuid not null references public.intake_sessions(id) on delete cascade, sender text not null, message text not null, created_at timestamptz not null default now());
+create table public.intake_answers (id uuid primary key default gen_random_uuid(), session_id uuid not null references public.intake_sessions(id) on delete cascade, question_key text not null, answer text not null, source text not null default 'TOUCH', created_at timestamptz not null default now());
+create table public.clinical_summaries (id uuid primary key default gen_random_uuid(), session_id uuid unique not null references public.intake_sessions(id) on delete cascade, patient_id uuid not null references public.patients(id), summary jsonb not null, verified boolean not null default false, created_at timestamptz not null default now());
 
 create index patients_name_idx on public.patients(name); create index queue_status_idx on public.queue_tokens(status); create index audit_created_idx on public.audit_logs(created_at desc);
 insert into public.facilities(name,code,district,state) values ('District Hospital, Kota','DH-KOT-042','Kota','Rajasthan') on conflict(code) do nothing;
@@ -64,6 +68,14 @@ create policy investigations_staff on public.investigation_orders for all to aut
 create policy lab_results_staff on public.lab_results for all to authenticated using (public.is_staff()) with check (public.is_staff());
 create policy documents_staff on public.documents for all to authenticated using (public.is_staff()) with check (public.is_staff());
 create policy audit_read_staff on public.audit_logs for select to authenticated using (public.is_staff());
+alter table public.intake_sessions enable row level security;
+alter table public.intake_messages enable row level security;
+alter table public.intake_answers enable row level security;
+alter table public.clinical_summaries enable row level security;
+create policy intake_staff on public.intake_sessions for all to authenticated using (public.is_staff() or patient_id in (select id from public.patients where id=patient_id)) with check (public.is_staff() or patient_id in (select id from public.patients where id=patient_id));
+create policy intake_messages_staff on public.intake_messages for all to authenticated using (public.is_staff()) with check (public.is_staff());
+create policy intake_answers_staff on public.intake_answers for all to authenticated using (public.is_staff()) with check (public.is_staff());
+create policy summaries_staff on public.clinical_summaries for all to authenticated using (public.is_staff()) with check (public.is_staff());
 
 insert into storage.buckets(id,name,public) values ('patient-photos','patient-photos',false),('medical-documents','medical-documents',false) on conflict(id) do nothing;
 create policy patient_photos_staff on storage.objects for all to authenticated using (bucket_id='patient-photos' and public.is_staff()) with check (bucket_id='patient-photos' and public.is_staff());

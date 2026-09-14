@@ -17,7 +17,7 @@ Copy `.env.example` to `.env` and replace only the placeholder Supabase URL and 
 
 ## 3. Create database objects
 
-Open Supabase Dashboard → SQL Editor and run `supabase/migrations/0001_niramay.sql`. It creates the NIRAMAY tables, indexes, RLS policies, helper functions, and Storage buckets/policies.
+Open Supabase Dashboard → SQL Editor and run `supabase/migrations/0001_niramay.sql`, then `0002_fix_patient_rls.sql`, `0003_departments_staff_read.sql`, and `0004_seed_demo_staff_roles.sql`. The role migration only assigns roles to Auth users that already exist; it does not create demo patients. The second migration fixes authenticated patient queries without exposing `auth.users` to the client.
 
 ## 4. Configure Auth
 
