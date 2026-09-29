@@ -1,3 +1,3 @@
 import app from './app';
-const port = Number(process.env.API_PORT || 4000);
-app.listen(port, () => console.log(`NIRAMAY API listening on http://localhost:${port}`));
+const port = Number(process.env.PORT || process.env.API_PORT || 4000);
+app.listen(port, () => console.log(`AarogyaVaani API listening on port ${port}`));

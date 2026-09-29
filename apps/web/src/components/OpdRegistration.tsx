@@ -57,6 +57,10 @@ export default function OpdRegistration() {
         if (!patientResult.data?.length) console.warn('Supabase returned no authorized patients for OPD registration.', patientResult);
         if (!departmentResult.data?.length) console.warn('Supabase returned no departments for OPD registration.', departmentResult);
         const profile = profileResult.data as any;
+        if (!profile?.facility_id) {
+          setError('This account is not authorized for hospital registration. Sign in with an authorized hospital staff account to use OPD registration.');
+          return;
+        }
         setFacilityId(profile?.facility_id || ''); setFacilityName(profile?.facilities?.name || 'District Hospital, Kota');
         setPatients(patientResult.data || []); setDepartments(departmentResult.data || []); setPatientId(patientResult.data?.[0]?.id || ''); setDepartmentId(departmentResult.data?.[0]?.id || '');
       }
@@ -92,17 +96,13 @@ export default function OpdRegistration() {
   const visiblePatients = useMemo(() => patients, [patients]);
   const registerPatient = async (event: React.FormEvent) => {
     event.preventDefault();
-    if (!supabase || !facilityId) return setPatientMessage('Unable to determine your authorised facility.');
+    if (!supabase || !facilityId) return setPatientMessage('This account is not authorized for hospital registration. Please sign in with an authorized staff account.');
     if (!patientForm.name.trim()) return setPatientMessage('Patient name is required.');
     setRegisteringPatient(true); setPatientMessage('Registering patient securely…');
     const niramayId = `AV-${new Date().getFullYear()}-${crypto.randomUUID().replaceAll('-', '').slice(0, 10).toUpperCase()}`;
     const patient = await supabase.from('patients').insert({ niramay_id: niramayId, name: patientForm.name.trim(), dob: patientForm.dob || null, gender: patientForm.gender || null, blood_group: patientForm.bloodGroup || null, facility_id: facilityId }).select('id,name,niramay_id').single();
     if (patient.error) { setPatientMessage(`Unable to register patient: ${patient.error.message}`); setRegisteringPatient(false); return; }
-    if (patientForm.mobile.trim()) {
-      const contact = await supabase.from('patient_contacts').insert({ patient_id: patient.data.id, type: 'MOBILE', value: patientForm.mobile.trim() });
-      if (contact.error) { await supabase.from('patients').delete().eq('id', patient.data.id); setPatientMessage(`Unable to save contact. Patient registration was rolled back: ${contact.error.message}`); setRegisteringPatient(false); return; }
-    }
-    setPatients(current => [patient.data, ...current.filter(item => item.id !== patient.data.id)]); setPatientId(patient.data.id); setPatientForm({ name: '', dob: '', gender: '', bloodGroup: '', mobile: '' }); setPatientMessage(`Patient registered successfully: ${patient.data.niramay_id}`); setShowPatientForm(false); setRegisteringPatient(false);
+    setPatients(current => [patient.data, ...current.filter(item => item.id !== patient.data.id)]); setPatientId(patient.data.id); setPatientForm({ name: '', dob: '', gender: '', bloodGroup: '', mobile: '' }); setPatientMessage(`Patient registered successfully: ${patient.data.niramay_id}. Private contact details can be added by the patient owner.`); setShowPatientForm(false); setRegisteringPatient(false);
   };
   const register = async () => {
     if (!supabase || !patientId || !departmentId) return setError('Select a patient and department before registering.');

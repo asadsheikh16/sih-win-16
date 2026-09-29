@@ -1,8 +1,10 @@
+import 'dotenv/config';
 import express, { Request, Response, NextFunction } from 'express';
 import cors from 'cors';
 import { z } from 'zod';
 import { PrismaClient, QueueStatus } from '@prisma/client';
 import { randomBytes } from 'node:crypto';
+import { createClient } from '@supabase/supabase-js';
 
 type DemoUser = { id: string; name: string; email: string; role: string; department: string };
 const users: DemoUser[] = [
@@ -18,9 +20,12 @@ const patients = [
 const loginSchema = z.object({ email: z.string().email(), password: z.string().min(1) });
 const app = express();
 const prisma = new PrismaClient();
-app.use(cors());
+const configuredSupabaseUrl = process.env.SUPABASE_URL && !process.env.SUPABASE_URL.includes('your-project-ref') ? process.env.SUPABASE_URL : process.env.VITE_SUPABASE_URL;
+const supabaseAnonKey = process.env.VITE_SUPABASE_ANON_KEY;
+const allowedOrigins = (process.env.FRONTEND_ORIGIN || 'http://localhost:5173,http://localhost:5176').split(',').map(origin => origin.trim()).filter(Boolean);
+app.use(cors({ origin: (origin, callback) => { if (!origin || allowedOrigins.includes(origin)) return callback(null, true); return callback(new Error('Origin not allowed by CORS')); } }));
 app.use(express.json({ limit: '1mb' }));
-app.get('/api/v1/health', (_req, res) => res.json({ status: 'ONLINE', demoMode: true }));
+app.get('/api/v1/health', (_req: Request, res: Response) => res.json({ status: 'ONLINE', demoMode: true }));
 app.post('/api/v1/auth/login', (req, res, next) => {
   try {
     const input = loginSchema.parse(req.body);
@@ -37,17 +42,48 @@ app.use('/api/v1', (req: Request, res: Response, next: NextFunction) => {
   if (!req.headers.authorization?.startsWith('Bearer ')) return res.status(401).json({ error: 'Authentication required' });
   next();
 });
-app.get('/api/v1/patients', (req, res) => {
+app.get('/api/v1/patients', (req: Request, res: Response) => {
   const q = String(req.query.q || '').toLowerCase();
   void prisma.patient.findMany({ where: q ? { OR: [{ name: { contains: q, mode: 'insensitive' } }, { niramayId: { contains: q, mode: 'insensitive' } }, { contacts: { some: { value: { contains: q } } } }] } : undefined, orderBy: { createdAt: 'desc' }, take: 100 }).then(data => res.json({ data, demoMode: true })).catch(() => res.json({ data: q ? patients.filter(patient => JSON.stringify(patient).toLowerCase().includes(q)) : patients, demoMode: true, database: 'fallback' }));
 });
-app.get('/api/v1/patients/:id', (req, res) => {
-  void prisma.patient.findFirst({ where: { OR: [{ id: req.params.id }, { niramayId: req.params.id }] }, include: { identifiers: true, contacts: true, allergies: true, histories: true, consultations: true, prescriptions: { include: { items: true } }, investigations: { include: { investigation: true, labResult: true } } } }).then(patient => patient ? res.json({ data: patient }) : res.status(404).json({ error: 'Patient not found' })).catch(() => { const patient = patients.find(candidate => candidate.id === req.params.id || candidate.niramayId === req.params.id); return patient ? res.json({ data: patient, database: 'fallback' }) : res.status(404).json({ error: 'Patient not found' }); });
+app.get('/api/v1/patients/:id', (req: Request, res: Response) => {
+  const patientId = Array.isArray(req.params.id) ? req.params.id[0] ?? '' : req.params.id;
+  void prisma.patient.findFirst({ where: { OR: [{ id: patientId }, { niramayId: patientId }] }, include: { identifiers: true, contacts: true, allergies: true, histories: true, consultations: true, prescriptions: { include: { items: true } }, investigations: { include: { investigation: true, labResult: true } } } }).then(patient => patient ? res.json({ data: patient }) : res.status(404).json({ error: 'Patient not found' })).catch(() => { const patient = patients.find(candidate => candidate.id === patientId || candidate.niramayId === patientId); return patient ? res.json({ data: patient, database: 'fallback' }) : res.status(404).json({ error: 'Patient not found' }); });
 });
 app.post('/api/v1/cards', async (req, res, next) => { try { const input = z.object({ patientId: z.string() }).parse(req.body); const patient = await prisma.patient.findUnique({ where: { id: input.patientId } }); if (!patient) return res.status(404).json({ error: 'Patient not found' }); const existing = await prisma.patientCard.findFirst({ where: { patientId: patient.id }, orderBy: { issueDate: 'desc' } }); const card = existing || await prisma.patientCard.create({ data: { patientId: patient.id, facilityId: patient.facilityId, secureRef: `NIRAMAY-${randomBytes(18).toString('hex')}` } }); return res.status(201).json({ data: { ...card, qrPayload: `niramay://card/${card.secureRef}` }, demoMode: true }); } catch (error) { return next(error); } });
 app.get('/api/v1/cards/:secureRef', async (req, res, next) => { try { const card = await prisma.patientCard.findUnique({ where: { secureRef: req.params.secureRef }, include: { patient: true, facility: true } }); if (!card) return res.status(404).json({ error: 'Secure card reference not found' }); return res.json({ data: { id: card.id, secureRef: card.secureRef, issueDate: card.issueDate, patient: { id: card.patient.id, niramayId: card.patient.niramayId, name: card.patient.name, dob: card.patient.dob, gender: card.patient.gender, bloodGroup: card.patient.bloodGroup }, facility: card.facility.name }, demoMode: true }); } catch (error) { return next(error); } });
 app.post('/api/v1/patients', async (req, res, next) => { try { const input = z.object({ name: z.string().min(2), mobile: z.string().optional(), gender: z.string().optional(), bloodGroup: z.string().optional() }).parse(req.body); const facility = await prisma.facility.findUnique({ where: { code: 'DH-KOT-042' } }); if (!facility) return res.status(503).json({ error: 'Demo facility is not seeded' }); const patient = await prisma.patient.create({ data: { niramayId: `NIR-RJ-${new Date().getFullYear()}-${String(Date.now()).slice(-6)}`, name: input.name, gender: input.gender, bloodGroup: input.bloodGroup, facilityId: facility.id, contacts: input.mobile ? { create: { type: 'MOBILE', value: input.mobile } } : undefined } }); return res.status(201).json({ data: patient, demoMode: true }); } catch (error) { return next(error); } });
-app.get('/api/v1/dashboard', async (_req, res) => { try { const [waiting, completed, emergency, pharmacyPending, investigationsPending] = await Promise.all([prisma.queueToken.count({ where: { status: QueueStatus.WAITING } }), prisma.queueToken.count({ where: { status: QueueStatus.COMPLETED } }), prisma.queueToken.count({ where: { priority: 'EMERGENCY' } }), prisma.prescription.count({ where: { status: 'PENDING' } }), prisma.investigationOrder.count({ where: { status: { not: 'COMPLETED' } } })]); return res.json({ facility: 'District Hospital, Kota', metrics: { opd: 248, waiting, completed, emergency, pharmacyPending, investigationsPending, followups: 18 }, demoMode: true }); } catch { return res.json({ facility: 'District Hospital, Kota', metrics: { opd: 248, waiting: 67, completed: 159, emergency: 8, pharmacyPending: 31, investigationsPending: 24, followups: 18 }, demoMode: true, database: 'fallback' }); } });
+app.get('/api/v1/dashboard', async (req: Request, res: Response) => {
+  try {
+    if (!configuredSupabaseUrl || !supabaseAnonKey) return res.status(503).json({ error: 'Supabase server configuration is incomplete.' });
+    const accessToken = req.headers.authorization?.replace(/^Bearer\s+/i, '');
+    if (!accessToken) return res.status(401).json({ error: 'Authentication required.' });
+    const supabaseUser = createClient(configuredSupabaseUrl, supabaseAnonKey, { auth: { autoRefreshToken: false, persistSession: false }, global: { headers: { Authorization: `Bearer ${accessToken}` } } });
+    const auth = await supabaseUser.auth.getUser(accessToken);
+    if (auth.error || !auth.data.user) return res.status(401).json({ error: auth.error?.message || 'Authenticated user was not found.' });
+    const profile = await supabaseUser.from('profiles').select('facility_id,facilities(name)').eq('id', auth.data.user.id).eq('status', 'ACTIVE').maybeSingle();
+    if (profile.error) throw profile.error;
+    if (!profile.data?.facility_id) return res.status(403).json({ error: 'No active facility is linked to this account.' });
+    const facilityId = profile.data.facility_id;
+    const startOfDay = new Date(); startOfDay.setHours(0, 0, 0, 0);
+    const [opd, waiting, completed, highPriority, pharmacyPending, investigationsPending, followups] = await Promise.all([
+      supabaseUser.from('opd_registrations').select('id,patients!inner(facility_id)', { count: 'exact', head: true }).eq('patients.facility_id', facilityId).gte('registered_at', startOfDay.toISOString()),
+      supabaseUser.from('queue_tokens').select('id,patients!inner(facility_id)', { count: 'exact', head: true }).eq('patients.facility_id', facilityId).eq('status', 'WAITING'),
+      supabaseUser.from('queue_tokens').select('id,patients!inner(facility_id)', { count: 'exact', head: true }).eq('patients.facility_id', facilityId).eq('status', 'COMPLETED'),
+      supabaseUser.from('queue_tokens').select('id,patients!inner(facility_id)', { count: 'exact', head: true }).eq('patients.facility_id', facilityId).in('priority', ['EMERGENCY', 'HIGH']),
+      supabaseUser.from('prescriptions').select('id,patients!inner(facility_id)', { count: 'exact', head: true }).eq('patients.facility_id', facilityId).eq('status', 'PENDING'),
+      supabaseUser.from('investigation_orders').select('id,patients!inner(facility_id)', { count: 'exact', head: true }).eq('patients.facility_id', facilityId).neq('status', 'COMPLETED'),
+      supabaseUser.from('followups').select('id,patients!inner(facility_id)', { count: 'exact', head: true }).eq('patients.facility_id', facilityId).eq('status', 'DUE')
+    ]);
+    const failed = [opd, waiting, completed, highPriority, pharmacyPending, investigationsPending, followups].find(result => result.error);
+    if (failed?.error) throw failed.error;
+    const facility = profile.data.facilities as { name?: string } | null;
+    return res.json({ facility: { name: facility?.name || 'Authorized facility' }, metrics: { opd: opd.count || 0, waiting: waiting.count || 0, completed: completed.count || 0, emergency: highPriority.count || 0, pharmacyPending: pharmacyPending.count || 0, investigationsPending: investigationsPending.count || 0, followups: followups.count || 0 }, database: 'supabase', demoMode: false });
+  } catch (error) {
+    console.error('Dashboard data load failed', error);
+    return res.status(503).json({ error: error instanceof Error ? error.message : 'Dashboard data is temporarily unavailable.' });
+  }
+});
 app.get('/api/v1/queue', async (_req, res) => { try { const data = await prisma.queueToken.findMany({ include: { patient: true, department: true }, orderBy: { createdAt: 'asc' } }); return res.json({ data, demoMode: true }); } catch { return res.json({ data: [], demoMode: true, database: 'fallback' }); } });
 app.patch('/api/v1/queue/:id', async (req, res, next) => { try { const input = z.object({ status: z.nativeEnum(QueueStatus) }).parse(req.body); const token = await prisma.queueToken.update({ where: { id: req.params.id }, data: { status: input.status } }); return res.json({ data: token, demoMode: true }); } catch (error) { return next(error); } });
 app.post('/api/v1/opd/register', async (req, res, next) => { try { const input = z.object({ patientId: z.string(), departmentId: z.string(), priority: z.string().optional() }).parse(req.body); const registration = await prisma.opdRegistration.create({ data: { patientId: input.patientId, departmentId: input.departmentId } }); const token = await prisma.queueToken.create({ data: { token: `OPD-${String(Date.now()).slice(-3)}`, patientId: input.patientId, departmentId: input.departmentId, priority: input.priority || 'ROUTINE' } }); return res.status(201).json({ data: { registration, token }, demoMode: true }); } catch (error) { return next(error); } });
