@@ -22,8 +22,17 @@ const app = express();
 const prisma = new PrismaClient();
 const configuredSupabaseUrl = process.env.SUPABASE_URL && !process.env.SUPABASE_URL.includes('your-project-ref') ? process.env.SUPABASE_URL : process.env.VITE_SUPABASE_URL;
 const supabaseAnonKey = process.env.VITE_SUPABASE_ANON_KEY;
-const allowedOrigins = (process.env.FRONTEND_ORIGIN || 'http://localhost:5173,http://localhost:5176').split(',').map(origin => origin.trim()).filter(Boolean);
-app.use(cors({ origin: (origin, callback) => { if (!origin || allowedOrigins.includes(origin)) return callback(null, true); return callback(new Error('Origin not allowed by CORS')); } }));
+const normalizeOrigin = (origin: string) => origin.trim().replace(/\/+$/, '');
+const allowedOrigins = new Set([
+  'https://sih-win-16-gqhi-mo25ttl63-guardians6.vercel.app',
+  'http://localhost:5173',
+  'http://localhost:5176',
+  ...(process.env.FRONTEND_ORIGIN || '').split(',').map(normalizeOrigin).filter(Boolean)
+]);
+app.use(cors({
+  origin: (origin, callback) => callback(null, !origin || allowedOrigins.has(normalizeOrigin(origin))),
+  optionsSuccessStatus: 204
+}));
 app.use(express.json({ limit: '1mb' }));
 app.get('/api/v1/health', (_req: Request, res: Response) => res.json({ status: 'ONLINE', demoMode: true }));
 app.post('/api/v1/auth/login', (req, res, next) => {
