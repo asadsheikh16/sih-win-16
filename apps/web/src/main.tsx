@@ -18,7 +18,92 @@ import PatientDashboard from './components/PatientDashboard';
 import CaseIntakeCard from './components/CaseIntakeCard';
 
 const api = async (path: string, options: RequestInit = {}) => { const token = localStorage.getItem('niramay_token'); const apiBase = (import.meta.env.VITE_API_URL || '').replace(/\/+$/, ''); const apiPath = apiBase.endsWith('/api/v1') ? path.replace('/api/v1', '') : path; const body = options.body ? (() => { try { return JSON.parse(String(options.body)); } catch { return {}; } })() : {}; if (supabase && path.startsWith('/api/v1/') && path !== '/api/v1/dashboard') { if (path === '/api/v1/patients' && !options.method) { const query = new URLSearchParams(path.includes('?') ? path.split('?')[1] : ''); let request = supabase.from('patients').select('*').order('created_at', { ascending: false }); const q = query.get('q'); if (q) request = request.or(`name.ilike.%${q}%,niramay_id.ilike.%${q}%`); const result = await request; if (result.error) throw result.error; return { data: result.data || [], demoMode: false, database: 'supabase' }; } if (path.startsWith('/api/v1/patients/') && !path.includes('/cards')) { const id = path.split('/').pop(); const result = await supabase.from('patients').select('*,patient_contacts(*),allergies(*),medical_histories(*),consultations(*),prescriptions(*),investigation_orders(*)').or(`id.eq.${id},niramay_id.eq.${id}`).maybeSingle(); if (result.error) throw result.error; if (!result.data) throw new Error('Patient not found'); return { data: result.data, database: 'supabase' }; } if (path === '/api/v1/patients' && options.method === 'POST') { const patient = body; const result = await supabase.from('patients').insert({ niramay_id: `NIR-RJ-${new Date().getFullYear()}-${String(Date.now()).slice(-6)}`, name: patient.name, gender: patient.gender, blood_group: patient.bloodGroup, facility_id: patient.facilityId }).select().single(); if (result.error) throw result.error; return { data: result.data, demoMode: false }; } if (path === '/api/v1/queue' && !options.method) { const result = await supabase.from('queue_tokens').select('*,patients(*),departments(*)').order('created_at'); if (result.error) throw result.error; return { data: result.data || [], demoMode: false }; } if (path.startsWith('/api/v1/queue/') && options.method === 'PATCH') { const result = await supabase.from('queue_tokens').update({ status: body.status }).eq('id', path.split('/').pop()).select().single(); if (result.error) throw result.error; return { data: result.data, demoMode: false }; } if (path === '/api/v1/opd/register') { const registration = await supabase.from('opd_registrations').insert({ patient_id: body.patientId, department_id: body.departmentId }).select().single(); if (registration.error) throw registration.error; const queue = await supabase.from('queue_tokens').insert({ token: `OPD-${String(Date.now()).slice(-3)}`, patient_id: body.patientId, department_id: body.departmentId, priority: body.priority || 'ROUTINE' }).select().single(); if (queue.error) throw queue.error; return { data: { registration: registration.data, token: queue.data }, demoMode: false }; } } const response = await fetch(`${apiBase}${apiPath}`, { ...options, headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}), ...options.headers } }); const responseText = await response.text(); let responseData: any = {}; try { responseData = responseText ? JSON.parse(responseText) : {}; } catch { responseData = { error: responseText || 'Invalid server response' }; } if (!response.ok) throw new Error(responseData.error || 'Request failed'); return responseData; };
-function Login() { const navigate = useNavigate(); const [error, setError] = useState(''); const submit = async (event: React.FormEvent<HTMLFormElement>) => { event.preventDefault(); const form = new FormData(event.currentTarget); try { const email = String(form.get('email')); const password = String(form.get('password')); if (supabase) { const { data, error: authError } = await supabase.auth.signInWithPassword({ email, password }); if (authError) throw authError; if (data.session) localStorage.setItem('niramay_token', data.session.access_token); } else { const result = await api('/api/v1/auth/login', { method: 'POST', body: JSON.stringify({ email, password }) }); localStorage.setItem('niramay_token', result.token); } navigate('/dashboard'); } catch (e) { setError(e instanceof Error ? e.message : 'Unable to sign in'); } }; return <main className="login"><form onSubmit={submit}><div className="mark">⚕</div><p className="eyebrow">SIH PROTOTYPE / DEMO</p><h1>AAROGYAVAANI</h1><p>Digital Government Health Network</p><label>Email<input name="email" defaultValue="doctor@niramay.demo" type="email" /></label><label>Password<input name="password" defaultValue="Demo@123" type="password" /></label>{error && <div className="error">{error}</div>}<button>Sign in securely</button><small>{supabase ? 'Supabase Auth enabled' : 'Demo API mode · password Demo@123'}</small></form></main>; }
+function Login() {
+  const navigate = useNavigate();
+  const [mode, setMode] = useState<'staff' | 'patient-login' | 'patient-signup'>('staff');
+  const [error, setError] = useState('');
+  const [message, setMessage] = useState('');
+  const [loading, setLoading] = useState(false);
+  const isPatient = mode !== 'staff';
+  useEffect(() => {
+    if (!supabase || !new URLSearchParams(location.search).has('confirmed')) return;
+    setMode('patient-login');
+    void supabase.auth.getSession().then(({ data, error: sessionError }) => {
+      if (sessionError) {
+        setError(sessionError.message);
+        return;
+      }
+      if (data.session) {
+        localStorage.setItem('niramay_token', data.session.access_token);
+        navigate('/patient', { replace: true });
+      } else {
+        setMessage('Email confirmed. Sign in with your Patient account to continue.');
+      }
+    });
+  }, [navigate]);
+  const submit = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    setError('');
+    setMessage('');
+    setLoading(true);
+    const form = new FormData(event.currentTarget);
+    try {
+      const email = String(form.get('email') || '').trim();
+      const password = String(form.get('password') || '');
+      if (!supabase) {
+        if (isPatient) throw new Error('Patient authentication requires Supabase Auth.');
+        const result = await api('/api/v1/auth/login', { method: 'POST', body: JSON.stringify({ email, password }) });
+        localStorage.setItem('niramay_token', result.token);
+        navigate('/dashboard');
+        return;
+      }
+      if (mode === 'patient-signup') {
+        if (password.length < 8) throw new Error('Password must be at least 8 characters.');
+        const signup = await supabase.auth.signUp({ email, password, options: { data: { full_name: String(form.get('name') || '').trim() }, emailRedirectTo: `${window.location.origin}/login?confirmed=1` } });
+        if (signup.error) throw signup.error;
+        if (!signup.data.user) throw new Error('Supabase did not create the Patient Auth user.');
+        if (!signup.data.session) {
+          setMessage('Account created. Check your email and open the confirmation link before signing in.');
+          return;
+        }
+        const profile = await supabase.rpc('create_owned_patient_profile', {
+          full_name: String(form.get('name') || '').trim(),
+          date_of_birth: form.get('dob') || null,
+          patient_gender: form.get('gender') || null,
+          patient_blood_group: form.get('blood_group') || null,
+          mobile_number: String(form.get('mobile') || '').trim(),
+          patient_address: String(form.get('address') || '').trim(),
+          patient_city: String(form.get('city') || '').trim(),
+          patient_state: String(form.get('state') || '').trim(),
+          patient_pincode: String(form.get('pincode') || '').trim(),
+          emergency_name: String(form.get('emergency_name') || '').trim(),
+          emergency_number: String(form.get('emergency_number') || '').trim(),
+          allergies: '',
+          medical_conditions: '',
+          current_medications: ''
+        });
+        if (profile.error) throw profile.error;
+        navigate('/patient');
+        return;
+      }
+      const login = await supabase.auth.signInWithPassword({ email, password });
+      if (login.error) throw login.error;
+      if (!login.data.session) throw new Error('No active session was returned.');
+      localStorage.setItem('niramay_token', login.data.session.access_token);
+      navigate(isPatient ? '/patient' : '/dashboard');
+    } catch (e) {
+      const authMessage = e instanceof Error ? e.message : 'Unable to complete authentication';
+      if (isPatient && /invalid login credentials|email not confirmed/i.test(authMessage)) {
+        setError(`Patient sign-in failed: ${authMessage}. Confirm the account email and verify the password.`);
+      } else {
+        setError(authMessage);
+      }
+    } finally {
+      setLoading(false);
+    }
+  };
+  return <main className="login"><form onSubmit={submit}><div className="mark">⚕</div><p className="eyebrow">SIH PROTOTYPE / DEMO</p><h1>AAROGYAVAANI</h1><p>Digital Government Health Network</p><div className="login-mode"><button type="button" className={mode === 'staff' ? 'button' : 'button secondary'} onClick={() => { setMode('staff'); setError(''); setMessage(''); }}>Hospital / Staff</button><button type="button" className={mode !== 'staff' ? 'button' : 'button secondary'} onClick={() => { setMode('patient-login'); setError(''); setMessage(''); }}>Patient</button></div>{mode === 'patient-signup' && <><label>Full name<input name="name" required minLength={2} /></label><label>Date of birth<input name="dob" type="date" /></label><label>Gender<select name="gender" defaultValue=""><option value="">Select</option><option>Female</option><option>Male</option><option>Other</option><option>Prefer not to say</option></select></label><label>Blood group<input name="blood_group" /></label><label>Mobile number<input name="mobile" required pattern="[0-9+ ()-]{8,}" /></label><label>Address<input name="address" required /></label><label>City<input name="city" required /></label><label>State<input name="state" required defaultValue="Rajasthan" /></label><label>Pincode<input name="pincode" required pattern="[0-9]{6}" /></label><label>Emergency contact name<input name="emergency_name" /></label><label>Emergency contact number<input name="emergency_number" /></label></>}<label>Email<input name="email" defaultValue={mode === 'staff' ? 'doctor@niramay.demo' : ''} type="email" required /></label><label>Password<input name="password" type="password" required minLength={8} /></label>{error && <div className="error">{error}</div>}{message && <div className="success">{message}</div>}<button disabled={loading}>{loading ? 'Please wait…' : mode === 'patient-signup' ? 'Create Patient Account' : 'Sign in securely'}</button>{isPatient && <button type="button" className="text-button" onClick={() => { setMode(mode === 'patient-signup' ? 'patient-login' : 'patient-signup'); setError(''); setMessage(''); }}>{mode === 'patient-signup' ? 'Already have a Patient account? Sign in' : 'New Patient? Create an account'}</button>}<small>Supabase Auth enabled</small></form></main>;
+}
 function Shell() { const [dashboard, setDashboard] = useState<any>(null); const [dashboardError, setDashboardError] = useState(''); const loadDashboard = () => { setDashboard(null); setDashboardError(''); const controller = new AbortController(); const timeout = window.setTimeout(() => controller.abort(), 10000); api('/api/v1/dashboard', { signal: controller.signal }).then(setDashboard).catch(error => setDashboardError(error?.name === 'AbortError' ? 'Dashboard request timed out. Check the API and Supabase connection.' : error instanceof Error ? error.message : 'Unable to load dashboard')).finally(() => window.clearTimeout(timeout)); }; useEffect(loadDashboard, []); return <div className="shell"><aside><div className="brand"><span>⚕</span><b>AAROGYAVAANI</b><small>AI-assisted Ayurvedic case taking</small></div><div className="facility">AUTHORIZED FACILITY<strong>District Hospital, Kota</strong><small>SIH PROTOTYPE / DEMO</small></div><nav><p>CARE JOURNEY</p>{[['/dashboard','Home'],['/patients','Patients'],['/patient/card','Health Card'],['/patient/intake','Case Taking'],['/documents','Health Records'],['/verify','Scan Patient QR']].map(([path, label]) => <Link key={path} to={path}>{label}</Link>)}<p>DOCTOR WORKSPACE</p>{[['/queue','Today’s Queue'],['/consultations','Doctor Review']].map(([path, label]) => <Link key={path} to={path}>{label}</Link>)}</nav><button className="signout" onClick={() => { localStorage.removeItem('niramay_token'); location.href='/login'; }}>Sign out</button></aside><main className="content"><header><span>District Hospital, Kota</span><span>Authorized operator session · ● Online</span></header><Routes><Route path="/dashboard" element={dashboardError ? <div className="empty-panel dashboard-state"><h2>Dashboard unavailable</h2><p>{dashboardError}</p><button className="button" onClick={loadDashboard}>Retry</button></div> : <Dashboard dashboard={dashboard} />} /><Route path="*" element={<Placeholder />} /></Routes></main></div>; }
 function Dashboard({ dashboard }: { dashboard: any }) { if (!dashboard) return <div className="state">Loading command centre…</div>; if (dashboard.error) return <div className="state error">{dashboard.error}</div>; return <><div className="page-head"><div><p className="eyebrow">AAROGYAVAANI · CASE-TAKING WORKSPACE</p><h1>Prepare every patient story clearly</h1><p>Patient health card → guided case taking → doctor review.</p></div><span className="badge">SYSTEM ONLINE</span></div><div className="journey-actions"><Link className="button" to="/patient/card">View Health Card</Link><Link className="button" to="/patient/intake">Start Case Taking</Link><Link className="button secondary" to="/documents">Health Records</Link></div><div className="metrics">{[['TODAY’S OPD',dashboard.metrics.opd],['WAITING',dashboard.metrics.waiting],['COMPLETED',dashboard.metrics.completed],['EMERGENCY / HIGH PRIORITY',String(dashboard.metrics.emergency).padStart(2,'0')],['PHARMACY PENDING',dashboard.metrics.pharmacyPending],['INVESTIGATIONS PENDING',dashboard.metrics.investigationsPending]].map(([label,value]) => <article key={String(label)}><small>{label}</small><strong>{value}</strong><span>Connected Supabase data</span></article>)}</div><div className="grid"><section className="panel"><h2>Today's case queue</h2><p>Open the live queue to move patients from waiting to practitioner review.</p><Link className="button secondary" to="/queue">Open Today’s Queue</Link></section><section className="panel"><h2>Safety boundary</h2><p>AI prepares a draft case summary. An authorized practitioner reviews and confirms the clinical record.</p><Link className="button secondary" to="/consultations">Open Doctor Review</Link></section></div></>; }
 function Patients() { const [query, setQuery] = useState(''); const [data, setData] = useState<any[]>([]); const [state, setState] = useState('Loading patient records…'); const load = () => { setState('Loading patient records…'); api(`/api/v1/patients${query ? `?q=${encodeURIComponent(query)}` : ''}`).then(result => { setData(result.data); setState(result.data.length ? '' : 'No patient found'); }).catch(error => setState(error.message)); }; useEffect(load, []); return <div><div className="page-head"><div><p className="eyebrow">AAROGYAVAANI NATIONAL PATIENT INDEX</p><h1>Patient records</h1><p>Search authorized longitudinal records at District Hospital, Kota.</p></div><Link className="button" to="/opd/register">+ OPD registration</Link></div><section className="panel"><div className="search-row"><input value={query} onChange={event => setQuery(event.target.value)} placeholder="Search AAROGYAVAANI ID, name or mobile"/><button className="button" onClick={load}>Search</button></div>{state && <div className="state">{state}</div>}{data.map(patient => <Link className="patient-row" to={`/patients/${patient.id}`} key={patient.id}><div><b>{patient.name}</b><small>{patient.niramayId}</small></div><span>{patient.mobile || 'Mobile not recorded'}</span><span>{patient.facility || 'District Hospital, Kota'}</span></Link>)}</section></div>; }
