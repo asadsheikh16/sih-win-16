@@ -24,6 +24,7 @@ const configuredSupabaseUrl = process.env.SUPABASE_URL && !process.env.SUPABASE_
 const supabaseAnonKey = process.env.VITE_SUPABASE_ANON_KEY;
 const normalizeOrigin = (origin: string) => origin.trim().replace(/\/+$/, '');
 const allowedOrigins = new Set([
+  'https://sih-win-16-gqhi.vercel.app',
   'https://sih-win-16-gqhi-mo25ttl63-guardians6.vercel.app',
   'http://localhost:5173',
   'http://localhost:5176',
